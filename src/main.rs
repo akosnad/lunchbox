@@ -1,12 +1,14 @@
-use std::{thread, time::Duration};
+use std::{net::UdpSocket, thread, time::Duration};
 
 use anyhow::bail;
+use artnet_protocol::*;
 use esp_idf_svc::{
     eventloop::EspSystemEventLoop,
     hal::{
+        ledc::{config::TimerConfig, LedcDriver, LedcTimerDriver},
         peripherals::Peripherals,
         prelude::*,
-        spi::{self},
+        spi,
     },
     ipv4, ping,
 };
@@ -24,15 +26,14 @@ fn main() -> anyhow::Result<()> {
     let pins = peripherals.pins;
     let sysloop = EspSystemEventLoop::take()?;
 
-    // let spi = SpiDriver::new(
-    //     peripherals.spi3,
-    //     peripherals.pins.gpio18,
-    //     peripherals.pins.gpio19,
-    //     None,
-    //     &SpiDriverConfig::default(),
-    // )
-    // .unwrap();
-    // let cs = PinDriver::output(peripherals.pins.gpio23).unwrap();
+    let mut led = {
+        let timer = LedcTimerDriver::new(
+            peripherals.ledc.timer0,
+            &TimerConfig::default().frequency(25.kHz().into()),
+        )?;
+        LedcDriver::new(peripherals.ledc.channel0, timer, pins.gpio2)?
+    };
+    led.set_duty(0)?;
 
     let eth = {
         let mut eth = Box::new(esp_idf_svc::eth::EspEth::wrap(
@@ -60,9 +61,25 @@ fn main() -> anyhow::Result<()> {
         eth
     };
 
+    info!("Done with eth setup");
+
+    let socket = UdpSocket::bind("0.0.0.0:6454")?;
+    info!("ArtNet socket bound");
+
     loop {
-        thread::sleep(Duration::from_secs(5));
-        ping(eth.netif().get_ip_info()?.subnet.gateway)?;
+        let mut buf = [0; 1024];
+        let (length, addr) = socket.recv_from(&mut buf)?;
+        let command = ArtCommand::from_buffer(&buf[..length])?;
+
+        info!("Received ArtNet command from {}", addr);
+        match command {
+            ArtCommand::Output(output) => {
+                let data = output.data.as_ref();
+                let led_dimmer = (data[0] as u32);
+                led.set_duty(led_dimmer)?;
+            }
+            _ => {}
+        }
     }
 }
 
@@ -86,7 +103,7 @@ fn eth_configure<T>(
 
     info!("Eth DHCP info: {:?}", ip_info);
 
-    ping(ip_info.subnet.gateway)?;
+    //ping(ip_info.subnet.gateway)?;
 
     Ok(())
 }
