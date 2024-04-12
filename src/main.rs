@@ -1,7 +1,4 @@
-use std::{net::UdpSocket, thread, time::Duration};
-
 use anyhow::bail;
-use artnet_protocol::*;
 use esp_idf_svc::{
     eventloop::EspSystemEventLoop,
     hal::{
@@ -10,9 +7,14 @@ use esp_idf_svc::{
         prelude::*,
         spi,
     },
+    handle::RawHandle,
     ipv4, ping,
+    sys::{self, esp_netif_set_hostname, ESP_OK},
 };
 use log::info;
+
+mod artnet;
+mod webserver;
 
 fn main() -> anyhow::Result<()> {
     // It is necessary to call this function once. Otherwise some patches to the runtime
@@ -35,52 +37,35 @@ fn main() -> anyhow::Result<()> {
     };
     led.set_duty(0)?;
 
-    let eth = {
-        let mut eth = Box::new(esp_idf_svc::eth::EspEth::wrap(
-            esp_idf_svc::eth::EthDriver::new_spi(
-                spi::SpiDriver::new(
-                    peripherals.spi2,
-                    pins.gpio18,
-                    pins.gpio19,
-                    Some(pins.gpio23),
-                    &spi::SpiDriverConfig::new().dma(spi::Dma::Auto(4096)),
-                )?,
-                pins.gpio26,
-                Some(pins.gpio5),
-                Some(pins.gpio33),
-                esp_idf_svc::eth::SpiEthChipset::W5500,
-                20.MHz().into(),
-                Some(&[0x02, 0x00, 0x00, 0x12, 0x34, 0x56]),
-                None,
-                sysloop.clone(),
+    let mut eth = Box::new(esp_idf_svc::eth::EspEth::wrap(
+        esp_idf_svc::eth::EthDriver::new_spi(
+            spi::SpiDriver::new(
+                peripherals.spi2,
+                pins.gpio18,
+                pins.gpio19,
+                Some(pins.gpio23),
+                &spi::SpiDriverConfig::new().dma(spi::Dma::Auto(4096)),
             )?,
-        )?);
+            pins.gpio26,
+            Some(pins.gpio5),
+            Some(pins.gpio33),
+            esp_idf_svc::eth::SpiEthChipset::W5500,
+            20.MHz().into(),
+            Some(&[0x02, 0x00, 0x00, 0x12, 0x34, 0x56]),
+            None,
+            sysloop.clone(),
+        )?,
+    )?);
 
-        eth_configure(&sysloop, &mut eth)?;
-
-        eth
-    };
+    eth_configure(&sysloop, &mut eth)?;
 
     info!("Done with eth setup");
 
-    let socket = UdpSocket::bind("0.0.0.0:6454")?;
-    info!("ArtNet socket bound");
+    webserver::init()?;
 
-    loop {
-        let mut buf = [0; 1024];
-        let (length, addr) = socket.recv_from(&mut buf)?;
-        let command = ArtCommand::from_buffer(&buf[..length])?;
+    artnet::init(led)?;
 
-        info!("Received ArtNet command from {}", addr);
-        match command {
-            ArtCommand::Output(output) => {
-                let data = output.data.as_ref();
-                let led_dimmer = (data[0] as u32);
-                led.set_duty(led_dimmer)?;
-            }
-            _ => {}
-        }
-    }
+    Ok(())
 }
 
 fn eth_configure<T>(
@@ -88,6 +73,19 @@ fn eth_configure<T>(
     eth: &mut esp_idf_svc::eth::EspEth<'_, T>,
 ) -> anyhow::Result<()> {
     info!("Eth created");
+
+    const HOSTNAME: &str = "lunchbox\0";
+    unsafe {
+        let result = esp_netif_set_hostname(
+            eth.netif().handle(),
+            core::ffi::CStr::from_bytes_with_nul(HOSTNAME.as_bytes())
+                .unwrap()
+                .as_ptr(),
+        );
+        if result != ESP_OK {
+            bail!("Failed to set hostname");
+        }
+    }
 
     let mut eth = esp_idf_svc::eth::BlockingEth::wrap(eth, sysloop.clone())?;
 
@@ -108,7 +106,7 @@ fn eth_configure<T>(
     Ok(())
 }
 
-fn ping(ip: ipv4::Ipv4Addr) -> anyhow::Result<()> {
+pub fn ping(ip: ipv4::Ipv4Addr) -> anyhow::Result<()> {
     info!("About to do some pings for {:?}", ip);
 
     let ping_summary = ping::EspPing::default().ping(ip, &Default::default())?;
