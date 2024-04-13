@@ -9,7 +9,7 @@ use esp_idf_svc::{
     },
     handle::RawHandle,
     ipv4, ping,
-    sys::{self, esp_netif_set_hostname, ESP_OK},
+    sys::{esp_netif_set_hostname, ESP_OK},
 };
 use log::info;
 

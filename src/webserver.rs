@@ -1,6 +1,13 @@
+use std::{collections::BTreeSet, sync::Mutex};
+
 use esp_idf_svc::{
-    http::{self, server::EspHttpServer},
+    http::{
+        self,
+        server::{ws::EspHttpWsDetachedSender, EspHttpServer},
+    },
     io::Write,
+    sys::EspError,
+    ws::FrameType,
 };
 
 use crate::artnet::DmxState;
@@ -47,12 +54,6 @@ pub fn init() -> anyhow::Result<()> {
         let data = {
             let raw = DmxState::get().clone();
             raw.data
-            //.as_slice()
-            //.into_iter()
-            //.map(|x| format!("{:02X}", x).as_bytes())
-            //.flatten()
-            //.collect::<Vec<_>>()
-            //.as_slice()
         };
         req.into_response(
             200,
@@ -66,8 +67,44 @@ pub fn init() -> anyhow::Result<()> {
         .map(|_| ())
     })?;
 
+    let sessions = Mutex::new(BTreeSet::<i32>::new());
+
+    server.ws_handler("/ws/dmx", move |ws| {
+        let mut sessions = sessions.lock().unwrap();
+
+        if ws.is_new() {
+            let thread_ws = ws.create_detached_sender()?;
+            std::thread::spawn(move || dmx_sender(thread_ws));
+
+            sessions.insert(ws.session());
+        } else if ws.is_closed() {
+            sessions.remove(&ws.session());
+            return Ok::<(), EspError>(());
+        }
+
+        Ok::<(), EspError>(())
+    })?;
+
     // keep server running beyond the scope of this function
     std::mem::forget(server);
 
     Ok(())
+}
+
+fn dmx_sender(mut ws: EspHttpWsDetachedSender) -> anyhow::Result<()> {
+    loop {
+        if ws.is_closed() {
+            return Ok(());
+        }
+
+        let data = {
+            let raw = DmxState::get().clone();
+            raw.data
+        };
+        let res = ws.send(FrameType::Binary(false), data.as_slice());
+        if res.is_err() {
+            return Err(res.err().unwrap().into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
 }

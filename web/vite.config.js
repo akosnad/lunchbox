@@ -10,6 +10,11 @@ export default defineConfig({
         target: "http://lunchbox",
         changeOrigin: true,
       },
+      "/ws/dmx": {
+        target: "ws://lunchbox",
+        changeOrigin: true,
+        ws: true,
+      },
     },
   },
 });

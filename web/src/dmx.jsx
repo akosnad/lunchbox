@@ -1,4 +1,4 @@
-import { useEffect, useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 
 const maxValue = 255;
 
@@ -17,35 +17,35 @@ function DmxChannel({ channel }) {
 export function Dmx() {
   const [state, setState] = useState(null);
   const [active, setActive] = useState(false);
+  const socket = useRef(null);
+
+  const parseDmx = async (event) => {
+    const data = event.data;
+    const buf = await data.arrayBuffer();
+    const arr = new Uint8Array(buf);
+    setState(
+      Array.from(arr).map((value, index) => {
+        return {
+          channel: index + 1,
+          value: value,
+        };
+      })
+    );
+  };
 
   const fetchDmx = async () => {
-    const response = await fetch("/dmx", {
-      method: "GET",
-      cache: "no-cache",
-      responseType: "arraybuffer",
-      headers: {
-        "Content-Type": "application/octet-stream",
-      },
-    });
-    console.log(response);
-    if (!response.ok) {
-      console.error("Error fetching DMX data: ", response.statusText);
-      return;
-    }
-    // put the ReadableStream into an uint8 array
-    const raw = new Uint8Array(await response.arrayBuffer());
-    // parse the raw data into a list of channels
-    const channels = [];
-    for (let i = 0; i < raw.length; i++) {
-      channels.push({ channel: i + 1, value: raw[i] });
-    }
-    setState(channels);
+    const domain = window.location.hostname;
+    const port = window.location.port;
+    socket.current = new WebSocket(`ws://${domain}:${port}/ws/dmx`);
+    socket.current.onmessage = parseDmx;
   };
 
   useEffect(() => {
-    if (!active) return;
-    const i = setInterval(fetchDmx, 100);
-    return () => clearInterval(i);
+    if (active) {
+      fetchDmx();
+    } else {
+      if (socket.current) socket.current.close();
+    }
   }, [active]);
 
   return (
