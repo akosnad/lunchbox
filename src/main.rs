@@ -19,6 +19,8 @@ use esp_idf_svc::{
 };
 use log::info;
 
+use crate::dmx::DmxState;
+
 mod artnet;
 pub mod dmx;
 mod webserver;
@@ -35,12 +37,13 @@ fn main() -> anyhow::Result<()> {
     let pins = peripherals.pins;
     let sysloop = EspSystemEventLoop::take()?;
 
-    let mut led = {
+    let led = {
         let timer = LedcTimerDriver::new(
             peripherals.ledc.timer0,
             &TimerConfig::default().frequency(25.kHz().into()),
         )?;
-        LedcDriver::new(peripherals.ledc.channel0, timer, pins.gpio2)?
+        let led = LedcDriver::new(peripherals.ledc.channel0, timer, pins.gpio2)?;
+        Box::leak(Box::new(led))
     };
     led.set_duty(0)?;
 
@@ -69,9 +72,9 @@ fn main() -> anyhow::Result<()> {
     info!("Done with eth setup");
 
     let uart = Box::leak(Box::new(Arc::new(Mutex::new(UartDriver::new(
-        peripherals.uart1,
-        pins.gpio0,
-        pins.gpio32,
+        peripherals.uart2,
+        pins.gpio21,
+        pins.gpio22,
         Some(pins.gpio12),
         Some(pins.gpio4),
         &UartConfig {
@@ -84,11 +87,13 @@ fn main() -> anyhow::Result<()> {
         },
     )?))));
 
-    webserver::init()?;
+    let dmx_state: DmxState = Default::default();
 
-    dmx::init(Box::leak(Box::new(led)), uart)?;
+    webserver::init(dmx_state.clone())?;
 
-    artnet::init()?;
+    dmx::init(led, uart, dmx_state.clone())?;
+
+    artnet::init(dmx_state)?;
 
     Ok(())
 }

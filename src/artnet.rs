@@ -5,7 +5,7 @@ use log::info;
 
 use crate::dmx::DmxState;
 
-pub fn init() -> anyhow::Result<()> {
+pub fn init(dmx_state: DmxState) -> anyhow::Result<()> {
     let socket = UdpSocket::bind("0.0.0.0:6454").unwrap();
     info!("ArtNet socket bound");
 
@@ -16,7 +16,7 @@ pub fn init() -> anyhow::Result<()> {
 
         if let ArtCommand::Output(output) = command {
             let data = output.data.as_ref();
-            DmxState::set(data[..512].try_into().unwrap());
+            dmx_state.set(data[..512].try_into().unwrap());
         }
     }
 }

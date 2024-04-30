@@ -14,7 +14,7 @@ use crate::dmx::DmxState;
 
 static WEB_FILES: &[(&str, &[u8])] = &include!(concat!(env!("OUT_DIR"), "/web_files.rs"));
 
-pub fn init() -> anyhow::Result<()> {
+pub fn init(dmx_state: DmxState) -> anyhow::Result<()> {
     let mut server = {
         let config = http::server::Configuration {
             stack_size: 10240,
@@ -50,11 +50,9 @@ pub fn init() -> anyhow::Result<()> {
         })?;
     }
 
-    server.fn_handler("/dmx", http::Method::Get, |req| {
-        let data = {
-            let raw = DmxState::get().clone();
-            raw.data
-        };
+    let dmx_state_1 = dmx_state.clone();
+    server.fn_handler("/dmx", http::Method::Get, move |req| {
+        let data = dmx_state_1.get();
         req.into_response(
             200,
             Some("OK"),
@@ -69,12 +67,14 @@ pub fn init() -> anyhow::Result<()> {
 
     let sessions = Mutex::new(BTreeSet::<i32>::new());
 
+    let dmx_state_2 = dmx_state.clone();
     server.ws_handler("/ws/dmx", move |ws| {
         let mut sessions = sessions.lock().unwrap();
 
         if ws.is_new() {
             let thread_ws = ws.create_detached_sender()?;
-            std::thread::spawn(move || dmx_sender(thread_ws));
+            let dmx_state_clone = dmx_state_2.clone();
+            std::thread::spawn(move || dmx_sender(thread_ws , dmx_state_clone));
 
             sessions.insert(ws.session());
         } else if ws.is_closed() {
@@ -91,16 +91,13 @@ pub fn init() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn dmx_sender(mut ws: EspHttpWsDetachedSender) -> anyhow::Result<()> {
+fn dmx_sender(mut ws: EspHttpWsDetachedSender, dmx_state: DmxState) -> anyhow::Result<()> {
     loop {
         if ws.is_closed() {
             return Ok(());
         }
 
-        let data = {
-            let raw = DmxState::get().clone();
-            raw.data
-        };
+        let data = dmx_state.get();
         let res = ws.send(FrameType::Binary(false), data.as_slice());
         if res.is_err() {
             return Err(res.err().unwrap().into());
