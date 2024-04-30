@@ -1,3 +1,5 @@
+use std::sync::{Arc, Mutex};
+
 use anyhow::bail;
 use esp_idf_svc::{
     eventloop::EspSystemEventLoop,
@@ -6,6 +8,10 @@ use esp_idf_svc::{
         peripherals::Peripherals,
         prelude::*,
         spi,
+        uart::{
+            config::{DataBits, StopBits},
+            UartConfig, UartDriver,
+        },
     },
     handle::RawHandle,
     ipv4, ping,
@@ -14,6 +20,7 @@ use esp_idf_svc::{
 use log::info;
 
 mod artnet;
+pub mod dmx;
 mod webserver;
 
 fn main() -> anyhow::Result<()> {
@@ -61,9 +68,27 @@ fn main() -> anyhow::Result<()> {
 
     info!("Done with eth setup");
 
+    let uart = Box::leak(Box::new(Arc::new(Mutex::new(UartDriver::new(
+        peripherals.uart1,
+        pins.gpio0,
+        pins.gpio32,
+        Some(pins.gpio12),
+        Some(pins.gpio4),
+        &UartConfig {
+            baudrate: 250.kHz().into(),
+            data_bits: DataBits::DataBits8,
+            stop_bits: StopBits::STOP2,
+            parity: esp_idf_svc::hal::uart::config::Parity::ParityNone,
+            flow_control: esp_idf_svc::hal::uart::config::FlowControl::CTSRTS,
+            ..Default::default()
+        },
+    )?))));
+
     webserver::init()?;
 
-    artnet::init(led)?;
+    dmx::init(Box::leak(Box::new(led)), uart)?;
+
+    artnet::init()?;
 
     Ok(())
 }

@@ -10,7 +10,7 @@ use esp_idf_svc::{
     ws::FrameType,
 };
 
-use crate::artnet::DmxState;
+use crate::dmx::DmxState;
 
 static WEB_FILES: &[(&str, &[u8])] = &include!(concat!(env!("OUT_DIR"), "/web_files.rs"));
 
