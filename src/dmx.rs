@@ -1,16 +1,13 @@
 use std::sync::{Arc, Mutex};
 
 use dmx_rdm::{
-    consts::{DMX_BAUD, INTER_SLOT_TIME_MILLIS},
+    consts::{BREAK_MICROS, DMX_BAUD, INTER_SLOT_TIME_MILLIS, MAB_MICROS},
     dmx_controller::{DmxController, DmxControllerConfig},
     dmx_uart_driver::{DmxRespUartDriver, DmxUartDriver},
 };
-use esp_idf_svc::hal::{
-    gpio::{Gpio12, Gpio21, Gpio22, Gpio4},
-    ledc::LedcDriver,
-    task::thread::ThreadSpawnConfiguration,
-    uart::{UartConfig, UartDriver, UART2},
-};
+use esp_idf_svc::{hal::{
+    delay::Delay, gpio::{Gpio12, Gpio21, Gpio22, Gpio4}, ledc::LedcDriver, task::thread::ThreadSpawnConfiguration, uart::{UartConfig, UartDriver, UART2}
+}, sys::{uart_set_line_inverse, uart_signal_inv_t_UART_SIGNAL_INV_DISABLE, uart_signal_inv_t_UART_SIGNAL_TXD_INV}};
 use esp_idf_svc::sys::EspError;
 
 #[derive(Debug, Clone)]
@@ -54,22 +51,32 @@ impl DmxState {
 
 struct LunchboxDmxController {
     uart: UartDriver<'static>,
+    delay: Delay,
 }
 impl LunchboxDmxController {
     fn new(uart: UartDriver<'static>) -> Self {
-        Self { uart }
+        Self {
+            uart,
+            delay: Delay::new(10),
+        }
     }
 
-    fn write(&mut self, buffer: &[u8]) -> Result<(), EspError> {
-        self.uart.write(buffer)?;
-        self.uart.wait_tx_done(INTER_SLOT_TIME_MILLIS as u32)?;
-        Ok(())
+    fn write(&mut self, buffer: &[u8]) -> Result<usize, EspError> {
+        let mut total_written = 0;
+        let total_bytes = buffer.len();
+        while total_written < total_bytes {
+            let written = self.uart.write_nb(&buffer[total_written..])?;
+            total_written += written;
+        }
+        self.delay.delay_ms(INTER_SLOT_TIME_MILLIS as u32);
+        Ok(total_written - 1)
     }
 
     fn begin_package(&mut self) -> Result<(), EspError> {
-        // send break signal
-        self.uart.write(&[0u8; 12])?;
-        self.uart.wait_tx_done(10)?;
+        unsafe { uart_set_line_inverse(self.uart.port(), uart_signal_inv_t_UART_SIGNAL_TXD_INV); }
+        self.delay.delay_us(BREAK_MICROS as u32);
+        unsafe { uart_set_line_inverse(self.uart.port(), uart_signal_inv_t_UART_SIGNAL_INV_DISABLE); }
+        self.delay.delay_us(MAB_MICROS as u32);
         Ok(())
     }
 }
@@ -90,12 +97,10 @@ impl DmxRespUartDriver for LunchboxDmxController {
         &mut self,
         buffer: &[u8],
     ) -> Result<usize, dmx_rdm::dmx_uart_driver::DmxUartDriverError<Self::DriverError>> {
-        if let Err(e) = self.write(buffer) {
+        self.write(buffer).map_err(|e| {
             log::error!("Error writing DMX frames: {:?}", e);
-            Err(dmx_rdm::dmx_uart_driver::DmxUartDriverError::DriverError(e))
-        } else {
-            Ok(buffer.len() - 1)
-        }
+            dmx_rdm::dmx_uart_driver::DmxUartDriverError::TimeoutError
+        })
     }
 }
 
@@ -149,8 +154,6 @@ pub fn init(
                 if let Err(e) = dmx_controller.send_dmx_package(&dmx) {
                     log::error!("Error sending DMX package: {:?}", e);
                 }
-
-                //std::thread::sleep(std::time::Duration::from_micros(200));
             }
         }();
         if let Err(e) = loop_result {
