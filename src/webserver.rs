@@ -74,7 +74,7 @@ pub fn init(dmx_state: DmxState) -> anyhow::Result<()> {
         if ws.is_new() {
             let thread_ws = ws.create_detached_sender()?;
             let dmx_state_clone = dmx_state_2.clone();
-            std::thread::spawn(move || dmx_sender(thread_ws , dmx_state_clone));
+            std::thread::spawn(move || dmx_sender(thread_ws, dmx_state_clone));
 
             sessions.insert(ws.session());
         } else if ws.is_closed() {
